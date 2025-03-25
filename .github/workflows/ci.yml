@@ -1,0 +1,97 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up JDK 11
+      uses: actions/setup-java@v3
+      with:
+        java-version: '11'
+        distribution: 'adopt'
+        cache: maven
+        
+    - name: Install Chrome
+      run: |
+        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add -
+        echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list
+        apt-get update
+        apt-get install -y google-chrome-stable
+        
+    - name: Install Firefox
+      run: |
+        apt-get install -y firefox
+        
+    - name: Install Edge
+      run: |
+        wget -q -O - https://packages.microsoft.com/keys/microsoft.asc | apt-key add -
+        echo "deb [arch=amd64] https://packages.microsoft.com/repos/edge stable main" >> /etc/apt/sources.list.d/microsoft-edge.list
+        apt-get update
+        apt-get install -y microsoft-edge-stable
+        
+    - name: Download WebDrivers
+      run: |
+        mkdir -p drivers
+        # ChromeDriver
+        CHROME_VERSION=$(google-chrome --version | cut -d ' ' -f 3 | cut -d '.' -f 1)
+        wget -q "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}" -O chrome_version
+        CHROMEDRIVER_VERSION=$(cat chrome_version)
+        wget -q "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip" -O chromedriver.zip
+        unzip chromedriver.zip -d drivers/
+        
+        # GeckoDriver
+        wget -q "https://github.com/mozilla/geckodriver/releases/download/v0.33.0/geckodriver-v0.33.0-linux64.tar.gz" -O geckodriver.tar.gz
+        tar -xzf geckodriver.tar.gz -C drivers/
+        
+        # EdgeDriver
+        EDGE_VERSION=$(microsoft-edge --version | cut -d ' ' -f 3 | cut -d '.' -f 1)
+        wget -q "https://msedgedriver.azureedge.net/LATEST_STABLE" -O edge_version
+        EDGEDRIVER_VERSION=$(cat edge_version)
+        wget -q "https://msedgedriver.azureedge.net/${EDGEDRIVER_VERSION}/edgedriver_linux64.zip" -O edgedriver.zip
+        unzip edgedriver.zip -d drivers/
+        
+        chmod +x drivers/*
+        
+    - name: Set WebDriver PATH
+      run: |
+        echo "$(pwd)/drivers" >> $GITHUB_PATH
+        
+    - name: Build with Maven
+      run: mvn clean install
+      
+    - name: Upload Test Reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-reports
+        path: |
+          test-output/
+          target/surefire-reports/
+          
+    - name: Upload Extent Reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: extent-reports
+        path: test-output/ExtentReports/
+        
+    - name: Notify on Failure
+      if: failure()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const issue = context.issue;
+          github.rest.issues.createComment({
+            ...issue,
+            issue_number: issue.number,
+            body: '❌ Tests failed! Check the [test reports](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.'
+          }); 
